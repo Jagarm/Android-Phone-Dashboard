@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Android Phone Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #10131b;
+      color: #eef1f7;
+      --panel: #191e29;
+      --muted: #a4adbd;
+      --accent: #9dc1ff;
+      --border: #2b3342;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 1080px; margin: 0 auto; padding: 36px 22px 60px; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+    h1 { margin: 0; font-size: clamp(1.7rem, 4vw, 2.4rem); letter-spacing: -.03em; }
+    h2 { margin: 0 0 14px; font-size: 1.1rem; }
+    p { margin: 8px 0; color: var(--muted); }
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    button, select {
+      min-height: 42px; border: 1px solid var(--border); border-radius: 9px;
+      background: var(--panel); color: inherit; padding: 8px 12px; font: inherit;
+    }
+    button { cursor: pointer; background: #263b5d; border-color: #3b5d8d; }
+    button:hover { background: #304b74; }
+    button:disabled { opacity: .65; cursor: wait; }
+    .status { margin: 20px 0; padding: 13px 15px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+    .status.error { border-color: #8c4c54; color: #ffd1d1; }
+    .status.ok { color: #c9f1d2; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    section { min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+    dl { display: grid; grid-template-columns: minmax(105px, .7fr) 1.3fr; gap: 9px 14px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    ul { margin: 0; padding-left: 20px; columns: 2; column-gap: 22px; }
+    li { overflow-wrap: anywhere; break-inside: avoid; margin-bottom: 4px; }
+    .wide { grid-column: 1 / -1; }
+    .note { font-size: .9rem; }
+    @media (max-width: 540px) { main { padding: 24px 14px 40px; } ul { columns: 1; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Android Phone Dashboard</h1>
+        <p>Local, read-only device diagnostics via Android Debug Bridge (ADB).</p>
+      </div>
+      <div class="controls">
+        <label for="device">Phone</label>
+        <select id="device" aria-label="Select connected Android phone" hidden></select>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+    </header>
+    <div id="status" class="status" role="status" aria-live="polite">Checking for Android devices…</div>
+    <div id="content" class="grid"></div>
+    <p class="note">This page does not display personal files, messages, contacts, account details, network identifiers, or live sensor readings. Sensor/hardware details are limited to Android’s declared feature list.</p>
+  </main>
+  <script>
+    const statusBox = document.querySelector("#status");
+    const content = document.querySelector("#content");
+    const deviceSelect = document.querySelector("#device");
+    const refreshButton = document.querySelector("#refresh");
+
+    function element(tag, text, className) {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = text;
+      if (className) node.className = className;
+      return node;
+    }
+
+    function renderSection(title, data, wide = false) {
+      const section = element("section", undefined, wide ? "wide" : "");
+      section.append(element("h2", title));
+      if (Array.isArray(data)) {
+        if (!data.length) {
+          section.append(element("p", "No declared hardware features reported."));
+        } else {
+          const list = element("ul");
+          data.forEach((value) => list.append(element("li", value)));
+          section.append(list);
+        }
+      } else {
+        const definitionList = element("dl");
+        Object.entries(data).forEach(([key, value]) => {
+          definitionList.append(element("dt", key), element("dd", String(value)));
+        });
+        section.append(definitionList);
+      }
+      content.append(section);
+    }
+
+    async function refresh() {
+      refreshButton.disabled = true;
+      statusBox.className = "status";
+      statusBox.textContent = "Reading connected device…";
+      content.replaceChildren();
+      try {
+        const query = deviceSelect.value ? `?serial=${encodeURIComponent(deviceSelect.value)}` : "";
+        const response = await fetch(`/api/status${query}`, { cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+        const devices = payload.devices || [];
+        const previous = deviceSelect.value;
+        deviceSelect.replaceChildren();
+        devices.forEach((device) => {
+          const option = element("option", `${device.serial} — ${device.state}`);
+          option.value = device.serial;
+          option.disabled = device.state !== "device";
+          deviceSelect.append(option);
+        });
+        deviceSelect.hidden = devices.length < 2;
+        if (payload.selected) deviceSelect.value = payload.selected;
+        else if (previous && devices.some((device) => device.serial === previous && device.state === "device")) deviceSelect.value = previous;
+        else {
+          const firstAuthorized = devices.find((device) => device.state === "device");
+          if (firstAuthorized) deviceSelect.value = firstAuthorized.serial;
+        }
+
+        if (!devices.length) {
+          statusBox.textContent = "No Android phone detected. Connect it by USB, enable USB debugging, and approve the computer on the phone.";
+          return;
+        }
+        const authorized = devices.filter((device) => device.state === "device");
+        if (!authorized.length) {
+          statusBox.textContent = `Phone detected (${devices.map((device) => `${device.serial}: ${device.state}`).join(", ")}), but ADB is not authorized. Unlock the phone and approve the USB debugging prompt.`;
+          statusBox.className = "status error";
+          return;
+        }
+        if (authorized.length > 1 && !payload.selected) {
+          statusBox.textContent = "More than one authorized phone is connected. Select a phone above and refresh.";
+          deviceSelect.hidden = false;
+          return;
+        }
+
+        const report = payload.report;
+        statusBox.textContent = `Connected and authorized${payload.selected ? `: ${payload.selected}` : ""}.`;
+        statusBox.className = "status ok";
+        const info = report.info || {};
+        const battery = info.Battery;
+        const storage = info["Internal storage (/data)"];
+        const features = info["Declared hardware features"];
+        delete info.Battery;
+        delete info["Internal storage (/data)"];
+        delete info["Declared hardware features"];
+        if (Object.keys(info).length) renderSection("Device", info);
+        if (battery) renderSection("Battery", battery);
+        if (storage) renderSection("Internal storage", storage);
+        if (Array.isArray(features)) {
+          renderSection("Declared hardware & sensor features", features, true);
+        }
+        (report.errors || []).forEach((message) => {
+          const section = element("section");
+          section.append(element("h2", "Some details unavailable"), element("p", message));
+          content.append(section);
+        });
+      } catch (error) {
+        statusBox.className = "status error";
+        statusBox.textContent = error.message || "Could not load device information.";
+      } finally {
+        refreshButton.disabled = false;
+      }
+    }
+
+    refreshButton.addEventListener("click", refresh);
+    deviceSelect.addEventListener("change", refresh);
+    refresh();
+  </script>
+</body>
+</html>
